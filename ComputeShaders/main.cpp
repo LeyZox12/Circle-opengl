@@ -4,6 +4,7 @@
 #include <cmath>
 #include <chrono>
 #include <fstream>
+#include <sstream>
 #include <thread>
 
 #include "imgui.h"
@@ -31,7 +32,9 @@ void onWindowResize(GLFWwindow* window, int width, int height);
 void drawCircleBatch(Point* points, GLuint& program);
 void drawRect(glm::vec4 rect, GLuint& program);
 void addPoint(glm::vec2 point, float radius);
-const char* loadFile(string src);
+bool readFileIntoString( const std::string &fileName, std::string &destination);
+
+const int POINT_COUNT = 6;
 
 int winx = 480;
 int winy = 480;
@@ -39,12 +42,16 @@ int winy = 480;
 vector<Point> pts;
 vector<glm::vec4> rects;
 
+
+    GLuint VAO;
+    GLuint VBO;
+    GLuint EBO;
 int main()
 {
     if(!glfwInit())
         cout << "couldn't load glfw" << endl;
     GLFWwindow* window;
-    window = glfwCreateWindow(480, 480, "Hello World", NULL, NULL);
+    window = glfwCreateWindow(winx, winy, "Hello World", NULL, NULL);
     glfwSetFramebufferSizeCallback(window, onWindowResize);   
     if (!window)
     {
@@ -60,14 +67,13 @@ int main()
     }
     clock_t startTime = clock();
     float ratio = 2*PI / 200.f;
-    for(int i =0; i < 20; i++)
+    for(int i =0; i < 3000; i++)
     {
-        addPoint(glm::vec2(i * 50, 0), 20.f);
+        addPoint(glm::vec2(sin(i*0.6)*(winx -200), sin(i*0.01)*300), 5.f);
     }
-    addPoint(glm::vec2( 80, -100), 50.f);
-    rects.emplace_back(glm::vec4(-480, 480, 100, -900));
-    rects.emplace_back(glm::vec4(-480, -390, 2000.f, -155.f));
-    rects.emplace_back(glm::vec4(390, 480, 100, -900));
+    rects.emplace_back(glm::vec4(-winx, winx, 100, -winx*2));
+    rects.emplace_back(glm::vec4(-winx, -winx+100, winx*2, -155.f));
+    rects.emplace_back(glm::vec4(winx-100, winx, 100, -winx*2));
     
     const char *vertexShaderSource = "#version 460 core\n"
         "layout (location = 0) in vec3 aPos;\n"
@@ -91,7 +97,9 @@ int main()
     glShaderSource(fragment, 1, &fragmentShaderSource, NULL);
     glCompileShader(fragment);
     
-    const char* computeShaderSource = loadFile("res/compute.frag");
+    string loadedFile = "";
+    readFileIntoString("res/compute2.frag", loadedFile);
+    const char* computeShaderSource = loadedFile.c_str();
     GLuint compute = glCreateShader(GL_COMPUTE_SHADER);
     glShaderSource(compute, 1, &computeShaderSource, NULL);
     glCompileShader(compute);
@@ -140,8 +148,14 @@ int main()
     glBindBuffer(GL_SHADER_STORAGE_BUFFER, ssboRects);
 
     size_t byteSizeRects = sizeof(glm::vec4) * rects.size();
-    size_t byteSizePoints = sizeof(Point) * pts.size();
     
+    float startClock = glfwGetTime();
+
+
+    glGenBuffers(1, &VBO);
+    glGenBuffers(1, &VAO);
+    glGenBuffers(1, &EBO);
+
     while (!glfwWindowShouldClose(window))
     {
         double dt = glfwGetTime() - oldTime;
@@ -150,6 +164,13 @@ int main()
         ImGui_ImplGlfw_NewFrame();
         ImGui::NewFrame();
         startTime = clock();
+        if(glfwGetTime() - startClock > 0.01)
+        {
+            static int i = 0;
+            //addPoint(glm::vec2(sin(i*0.6)*(winx -200), winx), 5.f);
+            startClock = glfwGetTime();
+        }
+        size_t byteSizePoints = sizeof(Point) * pts.size();
         glClear(GL_COLOR_BUFFER_BIT);
 
         glBindBuffer(GL_SHADER_STORAGE_BUFFER, ssbo);
@@ -159,8 +180,8 @@ int main()
         glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 0, ssbo);
         glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 1, ssboRects);
         glUseProgram(computeProgram);
-        glDispatchCompute(ceil(pts.size()/ 8.f), ceil(pts.size()/ 8.f), 1);
-        glMemoryBarrier(GL_BUFFER_UPDATE_BARRIER_BIT);
+        glDispatchCompute(ceil(pts.size()/ 8.f), ceil(pts.size()/8.f), 1);
+        glMemoryBarrier(GL_SHADER_STORAGE_BARRIER_BIT);
         glBindBuffer(GL_SHADER_STORAGE_BUFFER, ssbo);
         Point* ptsNew = (Point*)glMapBufferRange(GL_SHADER_STORAGE_BUFFER, 0, byteSizePoints, GL_MAP_READ_BIT);
         for(int i = 0; i < pts.size(); i++)
@@ -170,7 +191,7 @@ int main()
         for(int i = 0; i < 3; i++)
             drawRect(rects[i], program);
         ImGui::Text(("fps:" + format("{:.0f}", 1.f / dt)).c_str());
-        ImGui::SliderInt("max fps", &maxFPS, 15, 300);
+        ImGui::Text(("point count:" + to_string(pts.size())).c_str());
         ImGui::Render();
         ImGui_ImplOpenGL3_RenderDrawData(ImGui::GetDrawData());
         glfwSwapBuffers(window);
@@ -185,18 +206,18 @@ int main()
 
 void drawCircleBatch(Point* points, GLuint& program)
 {
-    int step = pts.size()* 9;
-    int stepI = pts.size()* 3;
-    float circle[pts.size()* 9 * pts.size()];
-    GLuint indices[pts.size()* 3 * pts.size()];
-    float ratio = (PI*2.f) / (float)pts.size();
+    int step = POINT_COUNT * 9;
+    int stepI = POINT_COUNT * 3;
+    float circle[pts.size()* 9* POINT_COUNT];
+    GLuint indices[pts.size()* 3 * POINT_COUNT];
+    float ratio = (PI*2.f) / (float)POINT_COUNT;
     for(int pIndex=0; pIndex < pts.size(); pIndex++)
     {
         const Point& p = points[pIndex];
         float radius = p.extra.x / (float)winx;
         float centerX = p.pos.x / (float)winx;
         float centerY = p.pos.y / (float)winx;
-        for(int i = 0; i < pts.size(); i++)
+        for(int i = 0; i < POINT_COUNT; i++)
         {
             int index = step * pIndex + i * 9;
             int i2 = stepI * pIndex + i * 3;
@@ -217,27 +238,21 @@ void drawCircleBatch(Point* points, GLuint& program)
         }
     }
 
-    GLuint VAO;
-    glGenBuffers(1, &VAO);
     glBindVertexArray(VAO);
 
-    GLuint VBO;
-    glGenBuffers(1, &VBO);
     glBindBuffer(GL_ARRAY_BUFFER, VBO);
-    glBufferData(GL_ARRAY_BUFFER, sizeof(circle), circle, GL_STATIC_DRAW);
+    glBufferData(GL_ARRAY_BUFFER, sizeof(float) * POINT_COUNT * 9 * pts.size(), circle, GL_STATIC_DRAW);
     //float* data = circle.data();
 
 
-    GLuint EBO;
-    glGenBuffers(1, &EBO);
     glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, EBO);
-    glBufferData(GL_ELEMENT_ARRAY_BUFFER, sizeof(indices), indices, GL_STATIC_DRAW);
+    glBufferData(GL_ELEMENT_ARRAY_BUFFER, sizeof(GLuint) * pts.size() * 3 * POINT_COUNT, indices, GL_STATIC_DRAW);
     glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, 3 * sizeof(float), (void*)0);
     glEnableVertexAttribArray(0);
 
     glUseProgram(program);
     glBindVertexArray(VAO);
-    glDrawElements(GL_TRIANGLES, pts.size()* 3 * pts.size(), GL_UNSIGNED_INT, 0);
+    glDrawElements(GL_TRIANGLES, pts.size()* 3 * POINT_COUNT, GL_UNSIGNED_INT, 0);
     glBindVertexArray(0);
 }
 
@@ -246,6 +261,9 @@ void onWindowResize(GLFWwindow* window, int width, int height)
     glViewport(0, 0, height, height);
     winx = height;
     winy = height;
+    rects[0] = (glm::vec4(-winx, winx, 100, -winx*2));
+    rects[1] = (glm::vec4(-winx, -winx+100, winx*2, -155.f));
+    rects[2] = (glm::vec4(winx-100, winx, 100, -winx*2));
 }
 
 void drawRect(glm::vec4 rect, GLuint& program)
@@ -263,19 +281,13 @@ void drawRect(glm::vec4 rect, GLuint& program)
         0, 1, 2,
         0, 2, 3
     };
-    GLuint VAO;
-    glGenBuffers(1, &VAO);
     glBindVertexArray(VAO);
 
-    GLuint VBO;
-    glGenBuffers(1, &VBO);
     glBindBuffer(GL_ARRAY_BUFFER, VBO);
-    glBufferData(GL_ARRAY_BUFFER, sizeof(vertices), vertices, GL_STATIC_DRAW);
+    glBufferData(GL_ARRAY_BUFFER, sizeof(float) * 12, vertices, GL_STATIC_DRAW);
     //float* data = circle.data();
 
 
-    GLuint EBO;
-    glGenBuffers(1, &EBO);
     glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, EBO);
     glBufferData(GL_ELEMENT_ARRAY_BUFFER, sizeof(indices), indices, GL_STATIC_DRAW);
     glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, 3 * sizeof(float), (void*)0);
@@ -301,20 +313,16 @@ void addPoint(glm::vec2 pos, float radius)
         pts[i].extra.y= 1.f / 240.f;
 }
 
-const char* loadFile(const string src)
+bool readFileIntoString( const std::string &fileName, std::string &destination)
 {
-    ifstream f(src);
-    if(f.good())
-    {
-        string out = "";
-        int lineI = 0;
-        while(!f.eof())
-        {
-            string buff;
-            getline(f, buff);
-            out += buff + "\n";
-        }
-        cout << out << endl;
-        return out.c_str();
+    std::ifstream in( fileName, std::ios::in | std::ios::binary );
+    if ( in ) {
+        in.seekg( 0, std::ios::end );
+        destination.resize( in.tellg() );
+        in.seekg( 0, std::ios::beg );
+        in.read( &destination[ 0 ], destination.size() );
+        in.close();
+        return true;
     }
+    return false;
 }

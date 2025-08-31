@@ -6,11 +6,9 @@
 #include <fstream>
 #include <sstream>
 #include <thread>
-
 #include "imgui.h"
 #include "backends/imgui_impl_opengl3.h"
 #include "backends/imgui_impl_glfw.h"
-
 
 #include "glad/glad.h"
 #include "glm.hpp"
@@ -36,16 +34,19 @@ bool readFileIntoString( const std::string &fileName, std::string &destination);
 
 const int POINT_COUNT = 6;
 
-int winx = 480;
-int winy = 480;
+int winx = 1480;
+int winy = 1480;
 
 vector<Point> pts;
 vector<glm::vec4> rects;
+vector<glm::vec4> acc;
+vector<float> vertices;
+vector<GLuint> indices;
 
+GLuint VAO;
+GLuint VBO;
+GLuint EBO;
 
-    GLuint VAO;
-    GLuint VBO;
-    GLuint EBO;
 int main()
 {
     if(!glfwInit())
@@ -67,9 +68,9 @@ int main()
     }
     clock_t startTime = clock();
     float ratio = 2*PI / 200.f;
-    for(int i =0; i < 3000; i++)
+    for(int i =0; i < 10000; i++)
     {
-        addPoint(glm::vec2(sin(i*0.6)*(winx -200), sin(i*0.01)*300), 5.f);
+        addPoint(glm::vec2(sin(i*0.6)*(winx -100), sin(i*0.01)*300), 7.5f);
     }
     rects.emplace_back(glm::vec4(-winx, winx, 100, -winx*2));
     rects.emplace_back(glm::vec4(-winx, -winx+100, winx*2, -155.f));
@@ -98,41 +99,53 @@ int main()
     glCompileShader(fragment);
     
     string loadedFile = "";
-    readFileIntoString("res/compute2.frag", loadedFile);
-    const char* computeShaderSource = loadedFile.c_str();
-    GLuint compute = glCreateShader(GL_COMPUTE_SHADER);
-    glShaderSource(compute, 1, &computeShaderSource, NULL);
-    glCompileShader(compute);
+    readFileIntoString("res/update.frag", loadedFile);
+    const char* updateShaderSource = loadedFile.c_str();
+    GLuint update = glCreateShader(GL_COMPUTE_SHADER);
+    glShaderSource(update, 1, &updateShaderSource, NULL);
+    glCompileShader(update);
 
-    GLint isCompiled = 0;
-    glfwSwapInterval(1);
-    glGetShaderiv(compute, GL_COMPILE_STATUS, &isCompiled);
-    if(isCompiled == GL_FALSE)
+    loadedFile = "";
+    readFileIntoString("res/collision.comp", loadedFile);
+    const char* collisionShaderSource = loadedFile.c_str();
+    GLuint collision = glCreateShader(GL_COMPUTE_SHADER);
+    glShaderSource(collision, 1, &collisionShaderSource, NULL);
+    glCompileShader(collision);
+
+    loadedFile = "";
+    readFileIntoString("res/render.comp", loadedFile);
+    const char* renderShaderSource = loadedFile.c_str();
+    GLuint render = glCreateShader(GL_COMPUTE_SHADER);
+    glShaderSource(render, 1, &renderShaderSource, NULL);
+    glCompileShader(render);
+    GLint success = 0;
+    glGetShaderiv(render, GL_COMPILE_STATUS, &success);
+    cout << success<< endl;
+
+    if (success != GL_TRUE)
     {
-        GLint maxLength = 0;
-        glGetShaderiv(compute, GL_INFO_LOG_LENGTH, &maxLength);
-
-        // The maxLength includes the NULL character
-        std::vector<GLchar> errorLog(maxLength);
-        glGetShaderInfoLog(compute, maxLength, &maxLength, &errorLog[0]);
-        for(int i = 0; i < maxLength; i++)cout << errorLog[i];
-        cout << endl;
-        // Provide the infolog in whatever manor you deem best.
-        // Exit with failure.
-        glDeleteShader(compute); // Don't leak the shader.
-        return 1;
+        GLsizei log_length = 0;
+        GLchar message[1024];
+        glGetShaderInfoLog(render, 1024, &log_length, message);
+        cout << message << endl;
     }
 
+
     GLuint program = glCreateProgram();
-    GLuint computeProgram = glCreateProgram();
-    glAttachShader(computeProgram, compute);
+    GLuint updateProgram = glCreateProgram();
+    GLuint collisionProgram = glCreateProgram();
+    GLuint renderProgram = glCreateProgram();
+    glAttachShader(updateProgram, update);
+    glAttachShader(collisionProgram, collision);
     glAttachShader(program, vertex);
     glAttachShader(program, fragment);
+    glAttachShader(renderProgram, render);
     glLinkProgram(program);
-    glLinkProgram(computeProgram);
+    glLinkProgram(updateProgram);
+    glLinkProgram(collisionProgram);
+    glLinkProgram(renderProgram);
     //glDrawArray(GL_TRIANGLES, 0, 3);
     float f = 0;
-    
 
     ImGui::CreateContext();
     ImGui_ImplGlfw_InitForOpenGL(window, true);
@@ -147,10 +160,21 @@ int main()
     glGenBuffers(1, &ssboRects);
     glBindBuffer(GL_SHADER_STORAGE_BUFFER, ssboRects);
 
+    GLuint ssboAcc;
+    glGenBuffers(1, &ssboAcc);
+    glBindBuffer(GL_SHADER_STORAGE_BUFFER, ssboAcc);
+
+    GLuint ssboVertices;
+    glGenBuffers(1, &ssboVertices);
+    glBindBuffer(GL_SHADER_STORAGE_BUFFER, ssboVertices);
+
+    GLuint ssboIndices;
+    glGenBuffers(1, &ssboIndices);
+    glBindBuffer(GL_SHADER_STORAGE_BUFFER, ssboIndices);
+
     size_t byteSizeRects = sizeof(glm::vec4) * rects.size();
     
     float startClock = glfwGetTime();
-
 
     glGenBuffers(1, &VBO);
     glGenBuffers(1, &VAO);
@@ -171,23 +195,95 @@ int main()
             startClock = glfwGetTime();
         }
         size_t byteSizePoints = sizeof(Point) * pts.size();
+        size_t byteSizeAcc = sizeof(glm::vec4) * pts.size();
+        size_t byteSizeVertices = sizeof(float) * pts.size() * POINT_COUNT * 9;
+        size_t byteSizeIndices = sizeof(GLuint) * pts.size() * POINT_COUNT * 3;
+
         glClear(GL_COLOR_BUFFER_BIT);
+        glBindBuffer(GL_SHADER_STORAGE_BUFFER, ssbo);
+        glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 0, ssbo);
+        glBufferData(GL_SHADER_STORAGE_BUFFER, byteSizePoints, pts.data(), GL_DYNAMIC_DRAW);
+        glUseProgram(updateProgram);
+        glDispatchCompute(ceil(pts.size()/ 8.f), 1, 1);
+        glMemoryBarrier(GL_SHADER_STORAGE_BARRIER_BIT);
+        glBindBuffer(GL_SHADER_STORAGE_BUFFER, ssbo);
+        Point* ptsUpdated = (Point*)glMapBufferRange(GL_SHADER_STORAGE_BUFFER, 0, byteSizePoints, GL_MAP_READ_BIT);
+        for(int i = 0; i < pts.size(); i++)
+        {
+            pts[i] = ptsUpdated[i];
+            acc[i] = glm::vec4(0, 0, 0, 0);
+        }
+
+        glUnmapBuffer(GL_SHADER_STORAGE_BUFFER);
 
         glBindBuffer(GL_SHADER_STORAGE_BUFFER, ssbo);
+        glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 0, ssbo);
         glBufferData(GL_SHADER_STORAGE_BUFFER, byteSizePoints, pts.data(), GL_DYNAMIC_DRAW);
         glBindBuffer(GL_SHADER_STORAGE_BUFFER, ssboRects);
         glBufferData(GL_SHADER_STORAGE_BUFFER, byteSizeRects, rects.data(), GL_DYNAMIC_DRAW);
-        glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 0, ssbo);
         glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 1, ssboRects);
-        glUseProgram(computeProgram);
-        glDispatchCompute(ceil(pts.size()/ 8.f), ceil(pts.size()/8.f), 1);
+        glBindBuffer(GL_SHADER_STORAGE_BUFFER, ssboAcc);
+        glBufferData(GL_SHADER_STORAGE_BUFFER, byteSizeAcc, acc.data(), GL_DYNAMIC_DRAW);
+        glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 2, ssboAcc);
+
+        glUseProgram(collisionProgram);
+        glDispatchCompute(ceil(pts.size()/ 8.f), ceil(pts.size()/ 8.f), 1);
         glMemoryBarrier(GL_SHADER_STORAGE_BARRIER_BIT);
         glBindBuffer(GL_SHADER_STORAGE_BUFFER, ssbo);
-        Point* ptsNew = (Point*)glMapBufferRange(GL_SHADER_STORAGE_BUFFER, 0, byteSizePoints, GL_MAP_READ_BIT);
-        for(int i = 0; i < pts.size(); i++)
-            pts[i] = ptsNew[i];
+        
+        Point* ptsCollided = (Point*)glMapBufferRange(GL_SHADER_STORAGE_BUFFER, 0, byteSizePoints, GL_MAP_READ_BIT);
+
+        pts.assign(ptsCollided, ptsCollided + pts.size());
+
         glUnmapBuffer(GL_SHADER_STORAGE_BUFFER);
-        drawCircleBatch(pts.data(), program);
+        glBindBuffer(GL_SHADER_STORAGE_BUFFER, ssboAcc);
+        glm::vec4* updatedAcc = (glm::vec4*)glMapBufferRange(GL_SHADER_STORAGE_BUFFER, 0, byteSizeAcc, GL_MAP_READ_BIT);
+        for(int i = 0; i < pts.size(); i++)
+        {
+            pts[i].pos.x += updatedAcc[i].x;
+            pts[i].pos.y += updatedAcc[i].y;
+        }
+
+        
+        glBindBuffer(GL_SHADER_STORAGE_BUFFER, ssbo);
+        glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 0, ssbo);
+        glBufferData(GL_SHADER_STORAGE_BUFFER, byteSizePoints, pts.data(), GL_DYNAMIC_DRAW);
+        glBindBuffer(GL_SHADER_STORAGE_BUFFER, ssboVertices);
+        glBufferData(GL_SHADER_STORAGE_BUFFER, byteSizeVertices, vertices.data(), GL_DYNAMIC_DRAW);
+        glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 3, ssboVertices);
+        glBindBuffer(GL_SHADER_STORAGE_BUFFER, ssboIndices);
+        glBufferData(GL_SHADER_STORAGE_BUFFER, byteSizeIndices, indices.data(), GL_DYNAMIC_DRAW);
+        glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 4, ssboIndices);
+
+        glUseProgram(renderProgram);
+        glDispatchCompute(ceil(pts.size()/ 8.f), 1, 1);
+        glMemoryBarrier(GL_SHADER_STORAGE_BARRIER_BIT);
+        glBindBuffer(GL_SHADER_STORAGE_BUFFER, ssboVertices);
+        float* computedVertices = (float*)glMapBufferRange(GL_SHADER_STORAGE_BUFFER, 0, byteSizeVertices, GL_MAP_READ_BIT);
+        vertices.assign(computedVertices, computedVertices + vertices.size());
+        glBindBuffer(GL_SHADER_STORAGE_BUFFER, ssboIndices);
+        GLuint* computedIndices = (GLuint*)glMapBufferRange(GL_SHADER_STORAGE_BUFFER, 0, byteSizeIndices, GL_MAP_READ_BIT);
+        indices.assign(computedIndices, computedIndices + indices.size());
+        glUnmapBuffer(GL_SHADER_STORAGE_BUFFER);
+        //for(auto& v : indices) cout << v << endl;
+        glBindVertexArray(VAO);
+        glBindBuffer(GL_ARRAY_BUFFER, VBO);
+        float* vertDat = vertices.data();
+        glBufferData(GL_ARRAY_BUFFER, byteSizeVertices, vertDat, GL_STATIC_DRAW);
+        GLuint* iDat = indices.data();
+        glUnmapBuffer(GL_SHADER_STORAGE_BUFFER);
+        glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, EBO);
+        glBufferData(GL_ELEMENT_ARRAY_BUFFER, byteSizeIndices, iDat, GL_STATIC_DRAW);
+        glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, 3 * sizeof(float), (void*)0);
+        glEnableVertexAttribArray(0);
+
+        glUseProgram(program);
+        glBindVertexArray(VAO);
+        glDrawElements(GL_TRIANGLES, pts.size()* 3 * POINT_COUNT, GL_UNSIGNED_INT, 0);
+        glBindVertexArray(0);
+
+
+        //drawCircleBatch(pts.data(), program);
         for(int i = 0; i < 3; i++)
             drawRect(rects[i], program);
         ImGui::Text(("fps:" + format("{:.0f}", 1.f / dt)).c_str());
@@ -199,17 +295,17 @@ int main()
     }
     glDeleteShader(fragment);
     glDeleteShader(vertex);
-    glDeleteShader(compute);
+    glDeleteShader(update);
+    glDeleteShader(collision);
     glfwTerminate();
     return 0;
 }
-
 void drawCircleBatch(Point* points, GLuint& program)
 {
     int step = POINT_COUNT * 9;
     int stepI = POINT_COUNT * 3;
-    float circle[pts.size()* 9* POINT_COUNT];
-    GLuint indices[pts.size()* 3 * POINT_COUNT];
+    vector<float> circle;
+    vector<GLuint> indices;
     float ratio = (PI*2.f) / (float)POINT_COUNT;
     for(int pIndex=0; pIndex < pts.size(); pIndex++)
     {
@@ -221,32 +317,32 @@ void drawCircleBatch(Point* points, GLuint& program)
         {
             int index = step * pIndex + i * 9;
             int i2 = stepI * pIndex + i * 3;
-            indices[i2] = i2;
-            indices[i2+1] = i2+1;
-            indices[i2+2] = i2+2;
-            circle[index] = centerX;
-            circle[index+1] = centerY;
-            circle[index+2] = 0;
+            indices.push_back(i2);
+            indices.push_back(i2+1);
+            indices.push_back(i2+2);
+            circle.push_back(centerX);
+            circle.push_back(centerY);
+            circle.push_back(0);
 
-            circle[index+3] = centerX + cos(ratio*i) * radius;
-            circle[index+4] = centerY + sin(ratio*i) * radius;
-            circle[index+5] = 0;
+            circle.push_back(centerX + cos(ratio*i) * radius);
+            circle.push_back(centerY + sin(ratio*i) * radius);
+            circle.push_back(0);
 
-            circle[index+6] = centerX + cos(ratio*(i+1)) * radius;
-            circle[index+7] = centerY + sin(ratio*(i+1)) * radius;
-            circle[index+8] = 0;
+            circle.push_back(centerX + cos(ratio*(i+1)) * radius);
+            circle.push_back(centerY + sin(ratio*(i+1)) * radius);
+            circle.push_back(0);
         }
     }
 
     glBindVertexArray(VAO);
-
     glBindBuffer(GL_ARRAY_BUFFER, VBO);
-    glBufferData(GL_ARRAY_BUFFER, sizeof(float) * POINT_COUNT * 9 * pts.size(), circle, GL_STATIC_DRAW);
+    float* dat = circle.data();
+    glBufferData(GL_ARRAY_BUFFER, sizeof(float) * POINT_COUNT * 9 * pts.size(), dat, GL_STATIC_DRAW);
     //float* data = circle.data();
-
+    GLuint* idat = indices.data();
 
     glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, EBO);
-    glBufferData(GL_ELEMENT_ARRAY_BUFFER, sizeof(GLuint) * pts.size() * 3 * POINT_COUNT, indices, GL_STATIC_DRAW);
+    glBufferData(GL_ELEMENT_ARRAY_BUFFER, sizeof(GLuint) * pts.size() * 3 * POINT_COUNT, idat, GL_STATIC_DRAW);
     glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, 3 * sizeof(float), (void*)0);
     glEnableVertexAttribArray(0);
 
@@ -311,6 +407,9 @@ void addPoint(glm::vec2 pos, float radius)
         pts[i].vel.x = 0;
         pts[i].vel.y = 0;
         pts[i].extra.y= 1.f / 240.f;
+        acc.emplace_back(glm::vec4(0, 0, 0, 0));
+        vertices.resize(pts.size() * POINT_COUNT * 9);
+        indices.resize(pts.size() * POINT_COUNT * 3);
 }
 
 bool readFileIntoString( const std::string &fileName, std::string &destination)

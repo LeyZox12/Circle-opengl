@@ -1,0 +1,70 @@
+#version 460 core
+
+layout(local_size_x = 8, local_size_y = 8, local_size_z = 1) in;
+struct Point{
+vec4 pos;
+vec4 oldPos;
+vec4 vel;
+vec4 extra;
+};
+layout(std430, binding = 0) buffer pts{
+Point p[];
+};
+
+layout(std430, binding = 1) buffer rectangles{
+vec4 rects[];
+};
+
+layout(std430, binding = 2) buffer deltas
+{
+    vec4 acc[];
+};
+
+void main()
+{
+    uint i = gl_GlobalInvocationID.x;
+    uint j = gl_GlobalInvocationID.y;
+    if(i>=p.length() || j>=p.length()) return;
+    else if(j != i)
+    for(int _ = 0; _ < 1; _++)
+    {
+        float r1 = p[i].extra.x;
+        float r2 = p[j].extra.x;
+        float rc = r1 + r2;
+        vec2 p1 = p[i].pos.xy;
+        vec2 p2 = p[j].pos.xy;
+        vec2 dir = p1 - p2;
+        float dist = distance(p1, p2);
+        if(dist > 0.0 && dist < rc)
+        {
+            dir /= dist;
+            float difference = rc - dist;
+            vec2 fixed1 = difference * 0.1f * -dir;
+            vec2 fixed2 = difference * 0.1f * dir;
+            acc[i].x -= fixed1.x;
+            acc[i].y -= fixed1.y;
+            
+            acc[j].x -= fixed2.x;
+            acc[j].y -= fixed2.y;
+            //acc[j].y -= 1;
+        }
+        for(int r = 0; r < 3; r++)
+        {
+            if(p[i].pos.x + p[i].extra.x > rects[r].x && p[i].pos.x - p[i].extra.x < rects[r].x + rects[r].z && p[i].pos.y - p[i].extra.x < rects[r].y)
+            {
+                float distances[4] =
+                {
+                    abs(rects[r].x - (p[i].pos.x + r1)),
+                    abs((p[i].pos.x - r1) - (rects[r].x + rects[r].z)),
+                    abs(rects[r].y - (p[i].pos.y + r1)),
+                    abs((p[i].pos.y - r1) - (rects[r].y + rects[r].w))
+                };
+                float minV = min(distances[0], min(distances[1], min(distances[2], distances[3])));
+                if(minV == distances[2]) p[i].pos.y = rects[r].y + p[i].extra.x;
+                else if(minV == distances[0]) p[i].pos.x = rects[r].x - p[i].extra.x;
+                else if(minV == distances[1]) p[i].pos.x = rects[r].x + rects[r].z + p[i].extra.x;
+            }
+        }
+    }
+
+}
